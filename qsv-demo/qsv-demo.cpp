@@ -7,6 +7,7 @@
 #include <fstream>
 #include <string>
 #include <sstream>
+#include <deque>
 
 #include <mfxvideo++.h>
 
@@ -35,6 +36,8 @@ typedef struct _tagContext
 	mfxVideoParam encParams;
 
 	int32_t asyncDepth = 4;
+
+	std::deque<int64_t> ptsQueue;
 }APPContext;
 
 static int _log(const char *fmt, ...) 
@@ -289,6 +292,7 @@ mfxStatus encode(APPContext* ctx,
 )
 {
 	mfxStatus sts = MFX_ERR_NONE;
+	ctx->ptsQueue.push_back(surf->Data.TimeStamp);
     sts = ctx->encoder->EncodeFrameAsync(nullptr, surf, &bs, &syncPt);
 
     if (MFX_ERR_MORE_DATA == sts) {
@@ -335,7 +339,9 @@ mfxStatus encode(APPContext* ctx,
         }
         break;
         }
-        _log("%6lld,%8d,%4s,%8lld,%8lld", index, bs.DataLength, type, bs.TimeStamp * 1000 / 90000, bs.DecodeTimeStamp * 1000 / 90000);
+		auto & dts = ctx->ptsQueue.front();
+		ctx->ptsQueue.pop_front();
+		_log("%6lld,%8d,%4s,%8lld,%8lld", index, bs.DataLength, type, bs.TimeStamp / 90, dts / 90);
         bs.DataLength = 0;
 		sts = MFX_ERR_NONE;
     }
