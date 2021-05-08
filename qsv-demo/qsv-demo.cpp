@@ -12,12 +12,21 @@
 
 #pragma comment(lib, "libmfx_vs2015.lib")
 
-mfxSession _session;
 std::vector<mfxExtBuffer *> videoExCfgs;
 mfxExtCodingOption codingOpt;
 mfxExtCodingOption2 codingOpt2;
 mfxExtCodingOption3 codingOpt3;
 mfxExtVideoSignalInfo vui;
+
+mfxFrameSurface1 *_pmfxSurfaces = nullptr;
+int32_t _NumFrameSurface = 0;
+
+typedef struct {
+	mfxBitstream mfxBS;
+	mfxSyncPoint syncp;
+} encOpera;
+
+encOpera * _Operas = nullptr;
 
 static int _log(const char *fmt, ...) 
 {
@@ -167,8 +176,6 @@ bool setupVideoParams(mfxVideoParam *vp, int fps, int kbps, int width, int heigh
 	return true;
 }
 
-mfxFrameSurface1 **_pmfxSurfaces = nullptr;
-int32_t _NumFrameSurface = 0;
 
 int allocFrame(MFXVideoENCODE* encoder, mfxVideoParam *vp)
 {
@@ -182,19 +189,20 @@ int allocFrame(MFXVideoENCODE* encoder, mfxVideoParam *vp)
 		auto size = width * height * 3 / 2;
 		_NumFrameSurface = req.NumFrameSuggested;
 
-		_pmfxSurfaces = new mfxFrameSurface1 *[req.NumFrameSuggested];
+		_pmfxSurfaces = new mfxFrameSurface1 [req.NumFrameSuggested];
+		ZeroMemory(_pmfxSurfaces, sizeof(mfxFrameSurface1)*req.NumFrameSuggested);
 
 		for (auto i = 0; i < req.NumFrameSuggested; i++) {
 			auto &surf = _pmfxSurfaces[i];
-			surf = new mfxFrameSurface1;
-			ZeroMemory(surf, sizeof(mfxFrameSurface1));
-			memcpy(&surf->Info, &vp->mfx.FrameInfo, sizeof(mfxFrameInfo));
-			auto &data = surf->Data;
+			memcpy(&surf.Info, &vp->mfx.FrameInfo, sizeof(mfxFrameInfo));
+			auto &data = surf.Data;
 			
  			mfxU8 *pSurface = (mfxU8 *)_aligned_malloc(size, 16);
+			ZeroMemory(pSurface, size);
 			data.Y = pSurface;
 			data.U = pSurface + width * height;
 			data.V = pSurface + width * height + width * height / 4;
+			data.Pitch = width; // must not empty
 		}
 	}
 	return true;
@@ -207,23 +215,14 @@ bool releaseFrame()
 	{
 		for (auto i = 0; i < _NumFrameSurface; i++) {
 			auto &surf = _pmfxSurfaces[i];
-			surf = new mfxFrameSurface1;
-			ZeroMemory(surf, sizeof(mfxFrameSurface1));
-			auto &pSurface = surf->Data.Y;
+			auto &pSurface = surf.Data.Y;
 			_aligned_free(pSurface);
-			delete surf;
 		}
 		delete[] _pmfxSurfaces;
 	}
 	return true;
 }
 
-typedef struct {
-	mfxBitstream mfxBS;
-	mfxSyncPoint syncp;
-} encOpera;
-
-encOpera * _Operas = nullptr;
 
 mfxStatus allocBitstream(int32_t asyncDepth, int32_t kbps)
 {
@@ -311,7 +310,7 @@ int main()
 	}
 
 	allocFrame(_encoder, &vp);
-	allocBitstream(syncDepth, kbps);
+	allocBitstream(_NumFrameSurface, kbps);
 
 	std::ifstream yuv;
 	std::string ifile("C:\\temps\\lol-single-person-nvenc-1920x1080-60fps.yuv");
@@ -339,16 +338,16 @@ int main()
 		yuv.read((char*)buf, size);
 		mfxU64 timeStamp = index * (1000/fps) * 90000 / 1000; // ms to 90kHz
 
-		while (1) {
+		{
 			auto &surface = _pmfxSurfaces[index % _NumFrameSurface];
-			auto &bs = _Operas[index % syncDepth].mfxBS;
-			auto &syncPt = _Operas[index % syncDepth].syncp;
+			auto &bs = _Operas[index % _NumFrameSurface].mfxBS;
+			auto &syncPt = _Operas[index % _NumFrameSurface].syncp;
 
 			{
 				auto len = pitchW*pitchH;
 				auto srclen = width * height;
 
-				auto ptr = surface->Data.Y;
+				auto ptr = surface.Data.Y;
 				auto src = buf;
 				for (auto i = 0; i < height; i++) {
 					memcpy(ptr, src, width);
@@ -356,7 +355,7 @@ int main()
 					src += width;
 				}
 
-				ptr = surface->Data.U;
+				ptr = surface.Data.U;
 				src = buf + srclen;
 				for (auto i = 0; i < height / 2; i++) {
 					memcpy(ptr, src, width / 2);
@@ -364,7 +363,7 @@ int main()
 					src += width / 2;
 				}
 
-				ptr = surface->Data.V;
+				ptr = surface.Data.V;
 				src = buf + srclen + srclen / 4;
 				for (auto i = 0; i < height / 2; i++) {
 					memcpy(ptr, src, width / 2);
@@ -372,44 +371,39 @@ int main()
 					src += width / 2;
 				}
 
-				surface->Data.TimeStamp = timeStamp;
-				surface->Data.MemType = MFX_MEMTYPE_SYSTEM_MEMORY;
+				surface.Data.TimeStamp = timeStamp;
+				surface.Data.MemType = MFX_MEMTYPE_SYSTEM_MEMORY;
 			}
 
-			sts = _encoder->EncodeFrameAsync(nullptr, surface, &bs, &syncPt);
+			sts = _encoder->EncodeFrameAsync(nullptr, &surface, &bs, &syncPt);
+			index++;
 
-			if (sts == MFX_ERR_NONE) {
-				bs.DataLength = 0;
+			if (MFX_ERR_MORE_DATA == sts) {
+				continue;
 			}
-			if (MFX_ERR_NONE < sts && !syncPt) {
+			else if (MFX_ERR_NONE < sts && !syncPt) {
 				// Repeat the call if warning and no output
 				if (MFX_WRN_DEVICE_BUSY == sts)
 					Sleep(1); // Wait if device is busy, then repeat the same call
+				continue;
 			}
 			else if (MFX_ERR_NONE < sts && syncPt) {
 				sts = MFX_ERR_NONE; // Ignore warnings if output is available
-				break;
+				continue;
 			}
-			else if (MFX_ERR_NOT_ENOUGH_BUFFER == sts) {
-				// Allocate more bitstream buffer memory here if needed...
-				break;
-			}
-			else if (MFX_ERR_MORE_DATA == sts) {
-				break;
-			}
-			else if (MFX_ERR_NONE != sts) {
-				_log("%s", std::to_string(sts).c_str());
+			else if (MFX_ERR_NONE > sts) {
+				_log("enc error code : %s", std::to_string(sts).c_str());
 				break;
 			}
 			else {
 				session->SyncOperation(syncPt, INFINITE);
 				h264.write(reinterpret_cast<const char*>(bs.Data) + bs.DataOffset, bs.DataLength);
 				std::string result;
-				const char * type = "unknow";
+				const char * type = "Err";
 				switch (bs.FrameType & 0xf) {
 				case MFX_FRAMETYPE_I:
 					type = "I";
-					if (bs.FrameType & MFX_FRAMETYPE_IDR == MFX_FRAMETYPE_IDR) {
+					if ((bs.FrameType & MFX_FRAMETYPE_IDR) == MFX_FRAMETYPE_IDR) {
 						type = "IDR";
 					}
 					break;
@@ -428,12 +422,10 @@ int main()
 				}
 					break;
 				}
-				_log("%6d - %8d - %4s, pts = %8lld , dts = %8lld", index, bs.DataLength, type, bs.TimeStamp * 1000 / 90000, bs.DecodeTimeStamp * 1000/ 90000);
+				_log("%6lld,%8d,%4s,%8lld,%8lld", index, bs.DataLength, type, bs.TimeStamp * 1000 / 90000, bs.DecodeTimeStamp * 1000/ 90000);
 				bs.DataLength = 0;
-				break;
 			}
 		}
-		index++;
 	}
 	yuv.close();
 	h264.close();
@@ -442,7 +434,7 @@ int main()
 	delete _encoder;
 
 	releaseFrame();
-	releaseBitstream(syncDepth);
+	releaseBitstream(_NumFrameSurface);
 
 	session->Close();
 	delete session;
