@@ -59,7 +59,7 @@ static int _log(const char *fmt, ...)
 #define MSDK_ALIGN16(value) (((value + 15) >> 4) << 4) // round up to a multiple of 16
 #define MSDK_ALIGN32(value) (((value + 31) >> 5) << 5) // round up to a multiple of 32
 
-bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height)
+bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height, int bframes)
 {
 	auto& vp = ctx->encParams;
 	auto& exBufs = ctx->exBufs;
@@ -96,7 +96,7 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height)
 
 	{
 		mfx.GopPicSize = fps * 2;
-		mfx.GopRefDist = 2 + 1; // bframes
+		mfx.GopRefDist = bframes + 1; // bframes
 		mfx.GopOptFlag = MFX_GOP_CLOSED;
 		mfx.IdrInterval = fps * 2;
 
@@ -373,6 +373,7 @@ int main()
 	int kbps = 8000;
 	int width = 1920;
 	int height = 1080;
+	int bframe = 3;
 
 	APPContext *ctx = new APPContext;
 
@@ -416,7 +417,7 @@ int main()
 
 	ctx->encoder = new MFXVideoENCODE(*ctx->session);
 	ZeroMemory(&ctx->encParams, sizeof(mfxVideoParam));
-	setupVideoParams(ctx, fps, kbps, width, height);
+	setupVideoParams(ctx, fps, kbps, width, height, bframe);
 	sts = ctx->encoder->Init(&ctx->encParams);
 	if (sts != MFX_ERR_NONE) {
 		_log("can not init encoder.");
