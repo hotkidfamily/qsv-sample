@@ -5,6 +5,8 @@ VisualStudioVersion = 14.0.25420.1
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "qsv-demo", "qsv-demo\qsv-demo.vcxproj", "{5484ED52-7ADF-4A98-A18F-55C9ADFC72F5}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "libmfx_vs2015", "3rd\libmfx\libmfx_vs2015.vcxproj", "{A9F7AEFB-DC6C-49E8-8E71-5351ABDCE627}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -21,6 +23,14 @@ Global
 		{5484ED52-7ADF-4A98-A18F-55C9ADFC72F5}.Release|x64.Build.0 = Release|x64
 		{5484ED52-7ADF-4A98-A18F-55C9ADFC72F5}.Release|x86.ActiveCfg = Release|Win32
 		{5484ED52-7ADF-4A98-A18F-55C9ADFC72F5}.Release|x86.Build.0 = Release|Win32
+		{A9F7AEFB-DC6C-49E8-8E71-5351ABDCE627}.Debug|x64.ActiveCfg = Debug|x64
+		{A9F7AEFB-DC6C-49E8-8E71-5351ABDCE627}.Debug|x64.Build.0 = Debug|x64
+		{A9F7AEFB-DC6C-49E8-8E71-5351ABDCE627}.Debug|x86.ActiveCfg = Debug|Win32
+		{A9F7AEFB-DC6C-49E8-8E71-5351ABDCE627}.Debug|x86.Build.0 = Debug|Win32
+		{A9F7AEFB-DC6C-49E8-8E71-5351ABDCE627}.Release|x64.ActiveCfg = Release|x64
+		{A9F7AEFB-DC6C-49E8-8E71-5351ABDCE627}.Release|x64.Build.0 = Release|x64
+		{A9F7AEFB-DC6C-49E8-8E71-5351ABDCE627}.Release|x86.ActiveCfg = Release|Win32
+		{A9F7AEFB-DC6C-49E8-8E71-5351ABDCE627}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
