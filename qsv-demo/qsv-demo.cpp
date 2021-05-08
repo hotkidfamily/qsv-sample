@@ -100,7 +100,7 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height,
 		mfx.GopOptFlag = MFX_GOP_CLOSED;
 		mfx.IdrInterval = fps * 2;
 
-		mfx.RateControlMethod = MFX_RATECONTROL_QVBR;
+		mfx.RateControlMethod = MFX_RATECONTROL_CBR;
 
 		//mfx.MaxKbps = kbps;
 		//mfx.InitialDelayInKB = kbps /8;
