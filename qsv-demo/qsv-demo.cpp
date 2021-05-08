@@ -12,21 +12,30 @@
 
 #pragma comment(lib, "libmfx_vs2015.lib")
 
-std::vector<mfxExtBuffer *> videoExCfgs;
-mfxExtCodingOption codingOpt;
-mfxExtCodingOption2 codingOpt2;
-mfxExtCodingOption3 codingOpt3;
-mfxExtVideoSignalInfo vui;
-
-mfxFrameSurface1 *_pmfxSurfaces = nullptr;
-int32_t _NumFrameSurface = 0;
-
 typedef struct {
-	mfxBitstream mfxBS;
-	mfxSyncPoint syncp;
+    mfxBitstream mfxBS;
+    mfxSyncPoint syncp;
 } encOpera;
 
-encOpera * _Operas = nullptr;
+typedef struct _tagContext 
+{
+    std::vector<mfxExtBuffer*> videoExCfgs;
+    mfxExtCodingOption codingOpt;
+    mfxExtCodingOption2 codingOpt2;
+    mfxExtCodingOption3 codingOpt3;
+    mfxExtVideoSignalInfo vui;
+
+    mfxFrameSurface1* _pmfxSurfaces = nullptr;
+    int32_t _NumFrameSurface = 0;
+
+    encOpera* _Operas = nullptr;
+
+	MFXVideoSession* session = nullptr;
+	MFXVideoENCODE* encoder = nullptr;
+	mfxVideoParam encParams;
+
+	int32_t syncDepth = 4;
+}APPContext;
 
 static int _log(const char *fmt, ...) 
 {
@@ -42,19 +51,26 @@ static int _log(const char *fmt, ...)
 	return 0;
 }
 
-bool getVideoCaps(MFXVideoENCODE* encoder, mfxVideoParam &ip)
+bool getVideoCaps(APPContext *ctx)
 {
-	encoder->Query(&ip, &ip);
-
-	//printf("session %p", &_session);
+	auto& ip = ctx->encParams;
+	ctx->encoder->Query(&ip, &ip);
 
 	return true;
 }
 #define MSDK_ALIGN16(value) (((value + 15) >> 4) << 4) // round up to a multiple of 16
 #define MSDK_ALIGN32(value) (((value + 31) >> 5) << 5) // round up to a multiple of 32
 
-bool setupVideoParams(mfxVideoParam *vp, int fps, int kbps, int width, int height, int syncDepth)
+bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height)
 {
+	mfxVideoParam *vp = &(ctx->encParams);
+	auto& videoExCfgs = ctx->videoExCfgs;
+	auto& codingOpt = ctx->codingOpt;
+	auto& codingOpt2 = ctx->codingOpt2;
+	auto& codingOpt3 = ctx->codingOpt3;
+	auto& vui = ctx->vui;
+	auto& syncDepth = ctx->syncDepth;
+
 	{
 		auto &frame = vp->mfx.FrameInfo;
 		frame.Width = MSDK_ALIGN16(width);
@@ -177,16 +193,22 @@ bool setupVideoParams(mfxVideoParam *vp, int fps, int kbps, int width, int heigh
 }
 
 
-int allocFrame(MFXVideoENCODE* encoder, mfxVideoParam *vp)
+int allocFrame(APPContext* ctx)
 {
+	auto& encoder = ctx->encoder;
+	auto& vp = ctx->encParams;
+
 	if (encoder) {
 		mfxFrameAllocRequest req;
 		ZeroMemory(&req, sizeof(mfxFrameAllocRequest));
-		encoder->QueryIOSurf(vp, &req);
+		encoder->QueryIOSurf(&vp, &req);
 
 		auto width = req.Info.Width;
 		auto height = req.Info.Height;
 		auto size = width * height * 3 / 2;
+		auto &_pmfxSurfaces = ctx->_pmfxSurfaces;
+		auto& _NumFrameSurface = ctx->_NumFrameSurface;
+
 		_NumFrameSurface = req.NumFrameSuggested;
 
 		_pmfxSurfaces = new mfxFrameSurface1 [req.NumFrameSuggested];
@@ -194,7 +216,7 @@ int allocFrame(MFXVideoENCODE* encoder, mfxVideoParam *vp)
 
 		for (auto i = 0; i < req.NumFrameSuggested; i++) {
 			auto &surf = _pmfxSurfaces[i];
-			memcpy(&surf.Info, &vp->mfx.FrameInfo, sizeof(mfxFrameInfo));
+			memcpy(&surf.Info, &vp.mfx.FrameInfo, sizeof(mfxFrameInfo));
 			auto &data = surf.Data;
 			
  			mfxU8 *pSurface = (mfxU8 *)_aligned_malloc(size, 16);
@@ -209,8 +231,11 @@ int allocFrame(MFXVideoENCODE* encoder, mfxVideoParam *vp)
 }
 
 
-bool releaseFrame()
+bool releaseFrame(APPContext *ctx)
 {
+	auto &_pmfxSurfaces = ctx->_pmfxSurfaces;
+	auto& _NumFrameSurface = ctx->_NumFrameSurface;
+
 	if (_pmfxSurfaces)
 	{
 		for (auto i = 0; i < _NumFrameSurface; i++) {
@@ -224,8 +249,11 @@ bool releaseFrame()
 }
 
 
-mfxStatus allocBitstream(int32_t asyncDepth, int32_t kbps)
+mfxStatus allocBitstream(APPContext * ctx, int32_t kbps)
 {
+	auto& _Operas = ctx->_Operas;
+	auto& asyncDepth = ctx->syncDepth;
+
 	_Operas = new encOpera[asyncDepth];
 	ZeroMemory(_Operas, sizeof(encOpera) * asyncDepth);
 
@@ -241,8 +269,11 @@ mfxStatus allocBitstream(int32_t asyncDepth, int32_t kbps)
 	return MFX_ERR_NONE;
 }
 
-void releaseBitstream(int32_t asyncDepth)
+void releaseBitstream(APPContext *ctx)
 {
+	auto& _Operas = ctx->_Operas;
+	auto& asyncDepth = ctx->syncDepth;
+
 	if (_Operas) {
 		for (int i = 0; i < asyncDepth; i++) {
 			auto &opera = _Operas[i];
@@ -261,6 +292,8 @@ int main()
 	int width = 1920;
 	int height = 1080;
 
+	APPContext *ctx = new APPContext;
+
 	int pitchW = MSDK_ALIGN16(width);
 	int pitchH = MSDK_ALIGN16(height);
 
@@ -274,7 +307,9 @@ int main()
 
 	mfxStatus sts;
 	mfxIMPL impl;
-	MFXVideoSession *session = new MFXVideoSession();
+
+	auto& session = ctx->session;
+	session = new MFXVideoSession();
 	sts = session->InitEx(initP);
 	session->QueryIMPL(&impl);
 	session->QueryVersion(&ver);
@@ -295,22 +330,23 @@ int main()
 		}
 	}
 
-	MFXVideoENCODE *_encoder = new MFXVideoENCODE(*session);
+	auto& _encoder = ctx->encoder;
+	_encoder = new MFXVideoENCODE(*session);
 
-	mfxVideoParam vp;
+	auto &vp = ctx->encParams;
 	ZeroMemory(&vp, sizeof(mfxVideoParam));
 
 	int32_t syncDepth = 4;
-	setupVideoParams(&vp, fps, kbps, width, height, syncDepth);
-	getVideoCaps(_encoder, vp);
+	setupVideoParams(ctx, fps, kbps, width, height);
+	getVideoCaps(ctx);
 
 	sts = _encoder->Init(&vp);
 	if (sts != MFX_ERR_NONE) {
 		_log("can not init encoder.");
 	}
 
-	allocFrame(_encoder, &vp);
-	allocBitstream(_NumFrameSurface, kbps);
+	allocFrame(ctx);
+	allocBitstream(ctx, kbps);
 
 	std::ifstream yuv;
 	std::string ifile("C:\\temps\\lol-single-person-nvenc-1920x1080-60fps.yuv");
@@ -339,9 +375,9 @@ int main()
 		mfxU64 timeStamp = index * (1000/fps) * 90000 / 1000; // ms to 90kHz
 
 		{
-			auto &surface = _pmfxSurfaces[index % _NumFrameSurface];
-			auto &bs = _Operas[index % _NumFrameSurface].mfxBS;
-			auto &syncPt = _Operas[index % _NumFrameSurface].syncp;
+			auto &surface = ctx->_pmfxSurfaces[index % ctx->_NumFrameSurface];
+			auto &bs = ctx->_Operas[index % ctx->syncDepth].mfxBS;
+			auto &syncPt = ctx->_Operas[index % ctx->syncDepth].syncp;
 
 			{
 				auto len = pitchW*pitchH;
@@ -433,14 +469,16 @@ int main()
 	sts = _encoder->Close();
 	delete _encoder;
 
-	releaseFrame();
-	releaseBitstream(_NumFrameSurface);
+	releaseFrame(ctx);
+	releaseBitstream(ctx);
 
 	session->Close();
 	delete session;
 
 	_aligned_free(buf);
 	buf = nullptr;
+
+	delete ctx;
 
 	return 0;
 }
