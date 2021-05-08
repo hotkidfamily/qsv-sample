@@ -25,10 +25,10 @@ typedef struct _tagContext
     mfxExtCodingOption3 codingOpt3;
     mfxExtVideoSignalInfo vui;
 
-    mfxFrameSurface1* _pmfxSurfaces = nullptr;
-    int32_t _NumFrameSurface = 0;
+    mfxFrameSurface1* encSurfaces = nullptr;
+    int32_t encSurfacesCnt = 0;
 
-    encOpera* _Operas = nullptr;
+    encOpera* encOperas = nullptr;
 
 	MFXVideoSession* session = nullptr;
 	MFXVideoENCODE* encoder = nullptr;
@@ -51,13 +51,6 @@ static int _log(const char *fmt, ...)
 	return 0;
 }
 
-bool getVideoCaps(APPContext *ctx)
-{
-	auto& ip = ctx->encParams;
-	ctx->encoder->Query(&ip, &ip);
-
-	return true;
-}
 #define MSDK_ALIGN16(value) (((value + 15) >> 4) << 4) // round up to a multiple of 16
 #define MSDK_ALIGN32(value) (((value + 31) >> 5) << 5) // round up to a multiple of 32
 
@@ -189,6 +182,8 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height)
 	vp->ExtParam = videoExCfgs.data();
 	vp->NumExtParam = videoExCfgs.size();
 
+	ctx->encoder->Query(vp, vp);
+
 	return true;
 }
 
@@ -206,8 +201,8 @@ int allocFrame(APPContext* ctx)
 		auto width = req.Info.Width;
 		auto height = req.Info.Height;
 		auto size = width * height * 3 / 2;
-		auto &_pmfxSurfaces = ctx->_pmfxSurfaces;
-		auto& _NumFrameSurface = ctx->_NumFrameSurface;
+		auto &_pmfxSurfaces = ctx->encSurfaces;
+		auto& _NumFrameSurface = ctx->encSurfacesCnt;
 
 		_NumFrameSurface = req.NumFrameSuggested;
 
@@ -233,8 +228,8 @@ int allocFrame(APPContext* ctx)
 
 bool releaseFrame(APPContext *ctx)
 {
-	auto &_pmfxSurfaces = ctx->_pmfxSurfaces;
-	auto& _NumFrameSurface = ctx->_NumFrameSurface;
+	auto &_pmfxSurfaces = ctx->encSurfaces;
+	auto& _NumFrameSurface = ctx->encSurfacesCnt;
 
 	if (_pmfxSurfaces)
 	{
@@ -251,7 +246,7 @@ bool releaseFrame(APPContext *ctx)
 
 mfxStatus allocBitstream(APPContext * ctx, int32_t kbps)
 {
-	auto& _Operas = ctx->_Operas;
+	auto& _Operas = ctx->encOperas;
 	auto& asyncDepth = ctx->syncDepth;
 
 	_Operas = new encOpera[asyncDepth];
@@ -271,7 +266,7 @@ mfxStatus allocBitstream(APPContext * ctx, int32_t kbps)
 
 void releaseBitstream(APPContext *ctx)
 {
-	auto& _Operas = ctx->_Operas;
+	auto& _Operas = ctx->encOperas;
 	auto& asyncDepth = ctx->syncDepth;
 
 	if (_Operas) {
@@ -283,6 +278,68 @@ void releaseBitstream(APPContext *ctx)
 
 		delete[] _Operas;
 	}
+}
+
+mfxStatus encode(APPContext* ctx,
+	int64_t index,
+    mfxFrameSurface1* surf,
+    mfxBitstream& bs,
+    mfxSyncPoint& syncPt,
+    std::ofstream& h264
+)
+{
+	mfxStatus sts = MFX_ERR_NONE;
+    sts = ctx->encoder->EncodeFrameAsync(nullptr, surf, &bs, &syncPt);
+
+    if (MFX_ERR_MORE_DATA == sts) {
+		if (surf) {
+            sts = MFX_ERR_NONE;
+		}
+    }
+    else if (MFX_ERR_NONE < sts && !syncPt) {
+        // Repeat the call if warning and no output
+        if (MFX_WRN_DEVICE_BUSY == sts)
+            Sleep(1); // Wait if device is busy, then repeat the same call
+		sts = MFX_ERR_NONE;
+    }
+    else if (MFX_ERR_NONE < sts && syncPt) {
+        sts = MFX_ERR_NONE; // Ignore warnings if output is available
+    }
+    else if (MFX_ERR_NONE > sts) {
+        _log("enc error code : %s", std::to_string(sts).c_str());
+    }
+    else {
+        ctx->session->SyncOperation(syncPt, INFINITE);
+        h264.write(reinterpret_cast<const char*>(bs.Data) + bs.DataOffset, bs.DataLength);
+        std::string result;
+        const char* type = "Err";
+        switch (bs.FrameType & 0xf) {
+        case MFX_FRAMETYPE_I:
+            type = "I";
+            if ((bs.FrameType & MFX_FRAMETYPE_IDR) == MFX_FRAMETYPE_IDR) {
+                type = "IDR";
+            }
+            break;
+        case MFX_FRAMETYPE_P:
+            type = "P";
+            break;
+        case MFX_FRAMETYPE_B:
+            type = "B";
+            break;
+        default:
+        {
+            std::stringstream stream;
+            stream << std::hex << bs.FrameType;
+            result = stream.str();
+            type = result.c_str();
+        }
+        break;
+        }
+        _log("%6lld,%8d,%4s,%8lld,%8lld", index, bs.DataLength, type, bs.TimeStamp * 1000 / 90000, bs.DecodeTimeStamp * 1000 / 90000);
+        bs.DataLength = 0;
+		sts = MFX_ERR_NONE;
+    }
+	return sts;
 }
 
 int main()
@@ -308,11 +365,13 @@ int main()
 	mfxStatus sts;
 	mfxIMPL impl;
 
-	auto& session = ctx->session;
-	session = new MFXVideoSession();
-	sts = session->InitEx(initP);
-	session->QueryIMPL(&impl);
-	session->QueryVersion(&ver);
+	ctx->session = new MFXVideoSession();
+	sts = ctx->session->InitEx(initP);
+    if (sts != MFX_ERR_NONE) {
+        _log("can not init session.");
+    }
+	ctx->session->QueryIMPL(&impl);
+	ctx->session->QueryVersion(&ver);
 
 	_log("with impl %x, in %d.%d", impl, ver.Major, ver.Minor);
 
@@ -330,17 +389,10 @@ int main()
 		}
 	}
 
-	auto& _encoder = ctx->encoder;
-	_encoder = new MFXVideoENCODE(*session);
-
-	auto &vp = ctx->encParams;
-	ZeroMemory(&vp, sizeof(mfxVideoParam));
-
-	int32_t syncDepth = 4;
+	ctx->encoder = new MFXVideoENCODE(*ctx->session);
+	ZeroMemory(&ctx->encParams, sizeof(mfxVideoParam));
 	setupVideoParams(ctx, fps, kbps, width, height);
-	getVideoCaps(ctx);
-
-	sts = _encoder->Init(&vp);
+	sts = ctx->encoder->Init(&ctx->encParams);
 	if (sts != MFX_ERR_NONE) {
 		_log("can not init encoder.");
 	}
@@ -375,9 +427,9 @@ int main()
 		mfxU64 timeStamp = index * (1000/fps) * 90000 / 1000; // ms to 90kHz
 
 		{
-			auto &surface = ctx->_pmfxSurfaces[index % ctx->_NumFrameSurface];
-			auto &bs = ctx->_Operas[index % ctx->syncDepth].mfxBS;
-			auto &syncPt = ctx->_Operas[index % ctx->syncDepth].syncp;
+			auto &surface = ctx->encSurfaces[index % ctx->encSurfacesCnt];
+			auto &bs = ctx->encOperas[index % ctx->syncDepth].mfxBS;
+			auto &syncPt = ctx->encOperas[index % ctx->syncDepth].syncp;
 
 			{
 				auto len = pitchW*pitchH;
@@ -410,70 +462,31 @@ int main()
 				surface.Data.TimeStamp = timeStamp;
 				surface.Data.MemType = MFX_MEMTYPE_SYSTEM_MEMORY;
 			}
-
-			sts = _encoder->EncodeFrameAsync(nullptr, &surface, &bs, &syncPt);
+			sts = encode(ctx, index, &surface, bs, syncPt, h264);
 			index++;
+		}
+	}
 
-			if (MFX_ERR_MORE_DATA == sts) {
-				continue;
-			}
-			else if (MFX_ERR_NONE < sts && !syncPt) {
-				// Repeat the call if warning and no output
-				if (MFX_WRN_DEVICE_BUSY == sts)
-					Sleep(1); // Wait if device is busy, then repeat the same call
-				continue;
-			}
-			else if (MFX_ERR_NONE < sts && syncPt) {
-				sts = MFX_ERR_NONE; // Ignore warnings if output is available
-				continue;
-			}
-			else if (MFX_ERR_NONE > sts) {
-				_log("enc error code : %s", std::to_string(sts).c_str());
-				break;
-			}
-			else {
-				session->SyncOperation(syncPt, INFINITE);
-				h264.write(reinterpret_cast<const char*>(bs.Data) + bs.DataOffset, bs.DataLength);
-				std::string result;
-				const char * type = "Err";
-				switch (bs.FrameType & 0xf) {
-				case MFX_FRAMETYPE_I:
-					type = "I";
-					if ((bs.FrameType & MFX_FRAMETYPE_IDR) == MFX_FRAMETYPE_IDR) {
-						type = "IDR";
-					}
-					break;
-				case MFX_FRAMETYPE_P :
-					type = "P";
-					break;
-				case MFX_FRAMETYPE_B:
-					type = "B";
-					break;
-				default:
-				{
-					std::stringstream stream;
-					stream << std::hex << bs.FrameType;
-					result = stream.str();
-					type = result.c_str();
-				}
-					break;
-				}
-				_log("%6lld,%8d,%4s,%8lld,%8lld", index, bs.DataLength, type, bs.TimeStamp * 1000 / 90000, bs.DecodeTimeStamp * 1000/ 90000);
-				bs.DataLength = 0;
-			}
+	// flush encoder
+	{
+		while (sts == MFX_ERR_NONE) {
+			auto& bs = ctx->encOperas[index % ctx->syncDepth].mfxBS;
+			auto& syncPt = ctx->encOperas[index % ctx->syncDepth].syncp;
+			sts = encode(ctx, index, nullptr, bs, syncPt, h264);
+            index++;
 		}
 	}
 	yuv.close();
 	h264.close();
 
-	sts = _encoder->Close();
-	delete _encoder;
+	sts = ctx->encoder->Close();
+	delete ctx->encoder;
 
 	releaseFrame(ctx);
 	releaseBitstream(ctx);
 
-	session->Close();
-	delete session;
+	ctx->session->Close();
+	delete ctx->session;
 
 	_aligned_free(buf);
 	buf = nullptr;
