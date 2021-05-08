@@ -38,6 +38,8 @@ typedef struct _tagContext
 	int32_t asyncDepth = 4;
 
 	std::deque<int64_t> ptsQueue;
+
+	uint64_t firstPts = UINT64_MAX;
 }APPContext;
 
 static int _log(const char *fmt, ...) 
@@ -292,7 +294,14 @@ mfxStatus encode(APPContext* ctx,
 )
 {
 	mfxStatus sts = MFX_ERR_NONE;
-	ctx->ptsQueue.push_back(surf->Data.TimeStamp);
+
+	if(surf)
+		ctx->ptsQueue.push_back(surf->Data.TimeStamp);
+
+	if (ctx->firstPts == UINT64_MAX) {
+		ctx->firstPts = surf->Data.TimeStamp;
+	}
+
     sts = ctx->encoder->EncodeFrameAsync(nullptr, surf, &bs, &syncPt);
 
     if (MFX_ERR_MORE_DATA == sts) {
@@ -341,7 +350,17 @@ mfxStatus encode(APPContext* ctx,
         }
 		auto & dts = ctx->ptsQueue.front();
 		ctx->ptsQueue.pop_front();
-		_log("%6lld,%8d,%4s,%8lld,%8lld", index, bs.DataLength, type, bs.TimeStamp / 90, dts / 90);
+
+        mfxEncodeStat stat = { 0 };
+        ctx->encoder->GetEncodeStat(&stat);
+
+		auto ms = (dts - ctx->firstPts) / 90;
+		int64_t kbps = 0;
+		if (ms != 0) {
+			kbps = stat.NumBit / ms;
+		}
+
+		_log("%6lld,%8d,%4s,%8lld,%8lld,%8lld", index, bs.DataLength, type, bs.TimeStamp / 90, dts / 90, kbps);
         bs.DataLength = 0;
 		sts = MFX_ERR_NONE;
     }
