@@ -19,22 +19,22 @@ typedef struct {
 
 typedef struct _tagContext 
 {
-    std::vector<mfxExtBuffer*> videoExCfgs;
-    mfxExtCodingOption codingOpt;
-    mfxExtCodingOption2 codingOpt2;
-    mfxExtCodingOption3 codingOpt3;
+    mfxExtBuffer* exBufs[4];
+    mfxExtCodingOption co;
+    mfxExtCodingOption2 co2;
+    mfxExtCodingOption3 co3;
     mfxExtVideoSignalInfo vui;
 
-    mfxFrameSurface1* encSurfaces = nullptr;
-    int32_t encSurfacesCnt = 0;
+    mfxFrameSurface1* surfaces = nullptr;
+    int32_t surfacesCnt = 0;
 
-    encOpera* encOperas = nullptr;
+    encOpera* encChain = nullptr;
 
 	MFXVideoSession* session = nullptr;
 	MFXVideoENCODE* encoder = nullptr;
 	mfxVideoParam encParams;
 
-	int32_t syncDepth = 4;
+	int32_t asyncDepth = 4;
 }APPContext;
 
 static int _log(const char *fmt, ...) 
@@ -56,16 +56,17 @@ static int _log(const char *fmt, ...)
 
 bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height)
 {
-	mfxVideoParam *vp = &(ctx->encParams);
-	auto& videoExCfgs = ctx->videoExCfgs;
-	auto& codingOpt = ctx->codingOpt;
-	auto& codingOpt2 = ctx->codingOpt2;
-	auto& codingOpt3 = ctx->codingOpt3;
+	auto& vp = ctx->encParams;
+	auto& exBufs = ctx->exBufs;
+	auto& co = ctx->co;
+	auto& co2 = ctx->co2;
+	auto& co3 = ctx->co3;
 	auto& vui = ctx->vui;
-	auto& syncDepth = ctx->syncDepth;
+	auto& asyncDepth = ctx->asyncDepth;
+	auto& mfx = ctx->encParams.mfx;
 
 	{
-		auto &frame = vp->mfx.FrameInfo;
+		auto &frame = mfx.FrameInfo;
 		frame.Width = MSDK_ALIGN16(width);
 		frame.Height = MSDK_ALIGN16(height);
 
@@ -81,88 +82,85 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height)
 		frame.FrameRateExtD = 1;
 	}
 
-	vp->AllocId = 0;
-	vp->AsyncDepth = syncDepth;
-	vp->IOPattern = MFX_IOPATTERN_IN_SYSTEM_MEMORY;
+	vp.AsyncDepth = asyncDepth;
+	vp.IOPattern = MFX_IOPATTERN_IN_SYSTEM_MEMORY;
 	
-	vp->mfx.CodecId = MFX_CODEC_AVC; 
-	vp->mfx.CodecProfile = MFX_PROFILE_AVC_HIGH;
-	vp->mfx.TargetUsage = MFX_TARGETUSAGE_BALANCED;
+	mfx.CodecId = MFX_CODEC_AVC; 
+	mfx.CodecProfile = MFX_PROFILE_AVC_HIGH;
+	mfx.TargetUsage = MFX_TARGETUSAGE_BALANCED;
 
 	{
-		vp->mfx.GopPicSize = fps * 2;
-		vp->mfx.GopRefDist = 2 + 1; // bframes
-		vp->mfx.GopOptFlag = MFX_GOP_CLOSED;
-		vp->mfx.IdrInterval = fps * 2;
+		mfx.GopPicSize = fps * 2;
+		mfx.GopRefDist = 2 + 1; // bframes
+		mfx.GopOptFlag = MFX_GOP_CLOSED;
+		mfx.IdrInterval = fps * 2;
 
-		vp->mfx.RateControlMethod = MFX_RATECONTROL_CBR;
+		mfx.RateControlMethod = MFX_RATECONTROL_CBR;
 
-		//vp->mfx.MaxKbps = kbps;
-		//vp->mfx.InitialDelayInKB = kbps /8;
-		vp->mfx.BufferSizeInKB = kbps/8;
+		//mfx.MaxKbps = kbps;
+		//mfx.InitialDelayInKB = kbps /8;
+		mfx.BufferSizeInKB = kbps/8;
 
-		if (vp->mfx.RateControlMethod == MFX_RATECONTROL_CQP)
+		if (mfx.RateControlMethod == MFX_RATECONTROL_CQP)
 		{
-			vp->mfx.QPI = vp->mfx.QPP = vp->mfx.QPB = 23;
+			mfx.QPI = mfx.QPP = mfx.QPB = 23;
 		}
-		else if (vp->mfx.RateControlMethod == MFX_RATECONTROL_ICQ ||
-			vp->mfx.RateControlMethod == MFX_RATECONTROL_LA_ICQ)
+		else if (mfx.RateControlMethod == MFX_RATECONTROL_ICQ ||
+			mfx.RateControlMethod == MFX_RATECONTROL_LA_ICQ)
 		{
-			//vp->mfx.ICQQuality = pInParams->ICQQuality;
+			//mfx.ICQQuality = pInParams->ICQQuality;
 		}
-		else if (vp->mfx.RateControlMethod == MFX_RATECONTROL_AVBR)
+		else if (mfx.RateControlMethod == MFX_RATECONTROL_AVBR)
 		{
-			//vp->mfx.Accuracy = pInParams->Accuracy;
-			vp->mfx.TargetKbps = kbps;
-			//vp->mfx.Convergence = pInParams->Convergence;
+			//mfx.Accuracy = pInParams->Accuracy;
+			mfx.TargetKbps = kbps;
+			//mfx.Convergence = pInParams->Convergence;
 		}
 		else
 		{
-			vp->mfx.TargetKbps = kbps; // in Kbps
+			mfx.TargetKbps = kbps; // in Kbps
 		}
 
 		if (false) // for battery power device using
 		{
-			vp->mfx.LowPower = MFX_CODINGOPTION_ON;
+			mfx.LowPower = MFX_CODINGOPTION_ON;
 		}
 	}
-	vp->mfx.NumSlice = 1;
-	vp->mfx.NumRefFrame = 3;
-	//vp->mfx.EncodedOrder = 0;
-
-	videoExCfgs.clear();
+	mfx.NumSlice = 1;
+	mfx.NumRefFrame = 3;
+	//mfx.EncodedOrder = 0;
 	
-	ZeroMemory(&codingOpt, sizeof(mfxExtCodingOption));
-	codingOpt.Header.BufferId = MFX_EXTBUFF_CODING_OPTION;
-	codingOpt.Header.BufferSz = sizeof(mfxExtCodingOption);
-	codingOpt.CAVLC = MFX_CODINGOPTION_OFF;
-	codingOpt.NalHrdConformance = MFX_CODINGOPTION_OFF;
-	codingOpt.SingleSeiNalUnit = MFX_CODINGOPTION_ON;
-	codingOpt.MaxDecFrameBuffering = 3;
-	codingOpt.FramePicture = MFX_CODINGOPTION_OFF; // progressive frame
-	codingOpt.PicTimingSEI = MFX_CODINGOPTION_OFF;
-	codingOpt.AUDelimiter = MFX_CODINGOPTION_OFF;
+	ZeroMemory(&co, sizeof(mfxExtCodingOption));
+	co.Header.BufferId = MFX_EXTBUFF_CODING_OPTION;
+	co.Header.BufferSz = sizeof(mfxExtCodingOption);
+	co.CAVLC = MFX_CODINGOPTION_OFF;
+	co.NalHrdConformance = MFX_CODINGOPTION_OFF;
+	co.SingleSeiNalUnit = MFX_CODINGOPTION_ON;
+	co.MaxDecFrameBuffering = 3;
+	co.FramePicture = MFX_CODINGOPTION_OFF; // progressive frame
+	co.PicTimingSEI = MFX_CODINGOPTION_OFF;
+	co.AUDelimiter = MFX_CODINGOPTION_OFF;
 
-	ZeroMemory(&codingOpt2, sizeof(mfxExtCodingOption2));
-	codingOpt2.Header.BufferId = MFX_EXTBUFF_CODING_OPTION2;
-	codingOpt2.Header.BufferSz = sizeof(mfxExtCodingOption2);
-	codingOpt2.RepeatPPS = MFX_CODINGOPTION_OFF;
+	ZeroMemory(&co2, sizeof(mfxExtCodingOption2));
+	co2.Header.BufferId = MFX_EXTBUFF_CODING_OPTION2;
+	co2.Header.BufferSz = sizeof(mfxExtCodingOption2);
+	co2.RepeatPPS = MFX_CODINGOPTION_OFF;
 
-	codingOpt2.AdaptiveI = MFX_CODINGOPTION_OFF;
-	codingOpt2.AdaptiveB = MFX_CODINGOPTION_ON;
-	codingOpt2.LookAheadDepth = 10;
-	codingOpt2.BRefType = MFX_B_REF_OFF;
-	codingOpt2.DisableDeblockingIdc = MFX_CODINGOPTION_OFF; // should check codec caps
-	codingOpt2.FixedFrameRate = MFX_CODINGOPTION_OFF;
+	co2.AdaptiveI = MFX_CODINGOPTION_OFF;
+	co2.AdaptiveB = MFX_CODINGOPTION_ON;
+	co2.LookAheadDepth = 10;
+	co2.BRefType = MFX_B_REF_OFF;
+	co2.DisableDeblockingIdc = MFX_CODINGOPTION_OFF; // should check codec caps
+	co2.FixedFrameRate = MFX_CODINGOPTION_OFF;
 
-	ZeroMemory(&codingOpt3, sizeof(mfxExtCodingOption3));
-	codingOpt3.Header.BufferId = MFX_EXTBUFF_CODING_OPTION3;
-	codingOpt3.Header.BufferSz = sizeof(mfxExtCodingOption3);
-	codingOpt3.NumSliceI = codingOpt3.NumSliceP = codingOpt3.NumSliceB = 1;
-	codingOpt3.WeightedBiPred = 1;
-	codingOpt3.WeightedPred = 1;
-	codingOpt3.ScenarioInfo = MFX_SCENARIO_LIVE_STREAMING;
-	codingOpt3.ContentInfo = MFX_CONTENT_FULL_SCREEN_VIDEO;
+	ZeroMemory(&co3, sizeof(mfxExtCodingOption3));
+	co3.Header.BufferId = MFX_EXTBUFF_CODING_OPTION3;
+	co3.Header.BufferSz = sizeof(mfxExtCodingOption3);
+	co3.NumSliceI = co3.NumSliceP = co3.NumSliceB = 1;
+	co3.WeightedBiPred = 1;
+	co3.WeightedPred = 1;
+	co3.ScenarioInfo = MFX_SCENARIO_LIVE_STREAMING;
+	co3.ContentInfo = MFX_CONTENT_FULL_SCREEN_VIDEO;
 	
 	ZeroMemory(&vui, sizeof(mfxExtVideoSignalInfo));
 	vui.Header.BufferId = MFX_EXTBUFF_VIDEO_SIGNAL_INFO;
@@ -174,15 +172,17 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height)
 	vui.VideoFullRange = 0;
 	vui.ColourDescriptionPresent = 1;
 
-	videoExCfgs.push_back(&codingOpt.Header);
-	videoExCfgs.push_back(&codingOpt2.Header);
-	videoExCfgs.push_back(&codingOpt3.Header);
-	videoExCfgs.push_back(&vui.Header);
+    ZeroMemory(ctx->exBufs, sizeof(exBufs));
 
-	vp->ExtParam = videoExCfgs.data();
-	vp->NumExtParam = videoExCfgs.size();
+	exBufs[0] = &co.Header;
+    exBufs[1] = &co2.Header;
+    exBufs[2] = &co3.Header;
+    exBufs[3] = &vui.Header;
 
-	ctx->encoder->Query(vp, vp);
+    vp.ExtParam = exBufs;
+    vp.NumExtParam = (mfxU16)4;
+
+	ctx->encoder->Query(&vp, &vp);
 
 	return true;
 }
@@ -201,16 +201,16 @@ int allocFrame(APPContext* ctx)
 		auto width = req.Info.Width;
 		auto height = req.Info.Height;
 		auto size = width * height * 3 / 2;
-		auto &_pmfxSurfaces = ctx->encSurfaces;
-		auto& _NumFrameSurface = ctx->encSurfacesCnt;
+		auto& surfaces = ctx->surfaces;
+		auto& surfacesCnt = ctx->surfacesCnt;
 
-		_NumFrameSurface = req.NumFrameSuggested;
+		surfacesCnt = req.NumFrameSuggested;
 
-		_pmfxSurfaces = new mfxFrameSurface1 [req.NumFrameSuggested];
-		ZeroMemory(_pmfxSurfaces, sizeof(mfxFrameSurface1)*req.NumFrameSuggested);
+		surfaces = new mfxFrameSurface1 [req.NumFrameSuggested];
+		ZeroMemory(surfaces, sizeof(mfxFrameSurface1)*req.NumFrameSuggested);
 
 		for (auto i = 0; i < req.NumFrameSuggested; i++) {
-			auto &surf = _pmfxSurfaces[i];
+			auto &surf = surfaces[i];
 			memcpy(&surf.Info, &vp.mfx.FrameInfo, sizeof(mfxFrameInfo));
 			auto &data = surf.Data;
 			
@@ -228,17 +228,17 @@ int allocFrame(APPContext* ctx)
 
 bool releaseFrame(APPContext *ctx)
 {
-	auto &_pmfxSurfaces = ctx->encSurfaces;
-	auto& _NumFrameSurface = ctx->encSurfacesCnt;
+	auto& surfaces = ctx->surfaces;
+	auto& surfacesCnt = ctx->surfacesCnt;
 
-	if (_pmfxSurfaces)
+	if (surfaces)
 	{
-		for (auto i = 0; i < _NumFrameSurface; i++) {
-			auto &surf = _pmfxSurfaces[i];
+		for (auto i = 0; i < surfacesCnt; i++) {
+			auto &surf = surfaces[i];
 			auto &pSurface = surf.Data.Y;
 			_aligned_free(pSurface);
 		}
-		delete[] _pmfxSurfaces;
+		delete[] surfaces;
 	}
 	return true;
 }
@@ -246,14 +246,14 @@ bool releaseFrame(APPContext *ctx)
 
 mfxStatus allocBitstream(APPContext * ctx, int32_t kbps)
 {
-	auto& _Operas = ctx->encOperas;
-	auto& asyncDepth = ctx->syncDepth;
+	auto& chain = ctx->encChain;
+	auto& asyncDepth = ctx->asyncDepth;
 
-	_Operas = new encOpera[asyncDepth];
-	ZeroMemory(_Operas, sizeof(encOpera) * asyncDepth);
+	chain = new encOpera[asyncDepth];
+	ZeroMemory(chain, sizeof(encOpera) * asyncDepth);
 
 	for (int i = 0; i < asyncDepth; i++) {
-		auto &opera = _Operas[i];
+		auto &opera = chain[i];
 		opera.mfxBS.MaxLength = kbps * 1000 / 8;
 		opera.mfxBS.Data = (mfxU8*)_aligned_malloc(opera.mfxBS.MaxLength, 32);// new mfxU8[opera.mfxBS.MaxLength];
 		ZeroMemory(opera.mfxBS.Data, opera.mfxBS.MaxLength);
@@ -266,17 +266,17 @@ mfxStatus allocBitstream(APPContext * ctx, int32_t kbps)
 
 void releaseBitstream(APPContext *ctx)
 {
-	auto& _Operas = ctx->encOperas;
-	auto& asyncDepth = ctx->syncDepth;
+	auto& chain = ctx->encChain;
+	auto& asyncDepth = ctx->asyncDepth;
 
-	if (_Operas) {
+	if (chain) {
 		for (int i = 0; i < asyncDepth; i++) {
-			auto &opera = _Operas[i];
+			auto &opera = chain[i];
 			_aligned_free(opera.mfxBS.Data);
 			opera.mfxBS.Data = nullptr;
 		}
 
-		delete[] _Operas;
+		delete[] chain;
 	}
 }
 
@@ -424,12 +424,16 @@ int main()
 
 	while (!yuv.eof()) {
 		yuv.read((char*)buf, size);
+		if (yuv.gcount() != size) {
+			break;
+		}
+
 		mfxU64 timeStamp = index * (1000/fps) * 90000 / 1000; // ms to 90kHz
 
 		{
-			auto &surface = ctx->encSurfaces[index % ctx->encSurfacesCnt];
-			auto &bs = ctx->encOperas[index % ctx->syncDepth].mfxBS;
-			auto &syncPt = ctx->encOperas[index % ctx->syncDepth].syncp;
+			auto &surface = ctx->surfaces[index % ctx->surfacesCnt];
+			auto &bs = ctx->encChain[index % ctx->asyncDepth].mfxBS;
+			auto &syncPt = ctx->encChain[index % ctx->asyncDepth].syncp;
 
 			{
 				auto len = pitchW*pitchH;
@@ -462,6 +466,7 @@ int main()
 				surface.Data.TimeStamp = timeStamp;
 				surface.Data.MemType = MFX_MEMTYPE_SYSTEM_MEMORY;
 			}
+
 			sts = encode(ctx, index, &surface, bs, syncPt, h264);
 			index++;
 		}
@@ -470,8 +475,8 @@ int main()
 	// flush encoder
 	{
 		while (sts == MFX_ERR_NONE) {
-			auto& bs = ctx->encOperas[index % ctx->syncDepth].mfxBS;
-			auto& syncPt = ctx->encOperas[index % ctx->syncDepth].syncp;
+			auto& bs = ctx->encChain[index % ctx->asyncDepth].mfxBS;
+			auto& syncPt = ctx->encChain[index % ctx->asyncDepth].syncp;
 			sts = encode(ctx, index, nullptr, bs, syncPt, h264);
             index++;
 		}
@@ -487,11 +492,10 @@ int main()
 
 	ctx->session->Close();
 	delete ctx->session;
-
-	_aligned_free(buf);
-	buf = nullptr;
-
 	delete ctx;
+
+    _aligned_free(buf);
+    buf = nullptr;
 
 	return 0;
 }
