@@ -494,6 +494,9 @@ int main()
 			}
 
 			sts = encode(ctx, index, &surface, bs, syncPt, h264);
+			if (sts != MFX_ERR_NONE) {
+				break;
+			}
 			index++;
 		}
 	}
