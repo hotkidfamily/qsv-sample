@@ -454,7 +454,7 @@ int main()
 			break;
 		}
 
-		mfxU64 timeStamp = index * (1000/fps) * 90000 / 1000; // ms to 90kHz
+		mfxU64 timeStamp = index * 90000 / fps; // ms to 90kHz
 
 		{
 			auto &surface = ctx->surfaces[index % ctx->surfacesCnt];
