@@ -80,7 +80,7 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height,
 		frame.CropW = width;
 		frame.CropH = height;
 
-		frame.FourCC = MFX_FOURCC_YV12;
+		frame.FourCC = MFX_FOURCC_NV12;
 		frame.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
 		frame.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
 		frame.FrameRateExtN = fps;
@@ -100,7 +100,7 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height,
 		mfx.GopOptFlag = MFX_GOP_CLOSED;
 		mfx.IdrInterval = fps * 2;
 
-		mfx.RateControlMethod = MFX_RATECONTROL_CBR;
+		mfx.RateControlMethod = MFX_RATECONTROL_QVBR;
 
 		//mfx.MaxKbps = kbps;
 		//mfx.InitialDelayInKB = kbps /8;
@@ -120,6 +120,10 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height,
 			//mfx.Accuracy = pInParams->Accuracy;
 			mfx.TargetKbps = kbps;
 			//mfx.Convergence = pInParams->Convergence;
+		}
+		else if (mfx.RateControlMethod == MFX_RATECONTROL_QVBR)
+		{
+			co3.QVBRQuality = 32;
 		}
 		else
 		{
@@ -189,6 +193,8 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height,
 
 	ctx->encoder->Query(&vp, &vp);
 
+	mfx.FrameInfo.FourCC = MFX_FOURCC_NV12;
+
 	return true;
 }
 
@@ -222,8 +228,9 @@ int allocFrame(APPContext* ctx)
  			mfxU8 *pSurface = (mfxU8 *)_aligned_malloc(size, 16);
 			ZeroMemory(pSurface, size);
 			data.Y = pSurface;
-			data.U = pSurface + width * height;
-			data.V = pSurface + width * height + width * height / 4;
+			data.UV = pSurface + width * height;
+// 			data.U = pSurface + width * height;
+// 			data.V = pSurface + width * height + width * height / 4;
 			data.Pitch = width; // must not empty
 		}
 	}
@@ -475,19 +482,25 @@ int main()
 
 				ptr = surface.Data.U;
 				src = buf + srclen;
+				auto src2 = buf + srclen + srclen / 4;
 				for (auto i = 0; i < height / 2; i++) {
-					memcpy(ptr, src, width / 2);
-					ptr += pitchW / 2;
-					src += width / 2;
+					//memcpy(ptr, src, width);
+					for (auto j = 0; j < width / 2; j++) {
+						*(ptr + 2*j) = *(src + j);
+						*(ptr + 2*j+ 1) = *(src2 + j);
+					}
+                    src += width / 2;
+                    src2 += width / 2;
+					ptr += pitchW;
 				}
 
-				ptr = surface.Data.V;
-				src = buf + srclen + srclen / 4;
-				for (auto i = 0; i < height / 2; i++) {
-					memcpy(ptr, src, width / 2);
-					ptr += pitchW / 2;
-					src += width / 2;
-				}
+// 				ptr = surface.Data.V;
+// 				src = buf + srclen + srclen / 4;
+// 				for (auto i = 0; i < height / 2; i++) {
+// 					memcpy(ptr, src, width / 2);
+// 					ptr += pitchW / 2;
+// 					src += width / 2;
+// 				}
 
 				surface.Data.TimeStamp = timeStamp;
 				surface.Data.MemType = MFX_MEMTYPE_SYSTEM_MEMORY;
