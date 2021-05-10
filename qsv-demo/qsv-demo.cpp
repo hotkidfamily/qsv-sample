@@ -8,6 +8,7 @@
 #include <string>
 #include <sstream>
 #include <deque>
+#include <algorithm>
 
 #include <mfxvideo++.h>
 
@@ -45,7 +46,32 @@ typedef struct _tagContext
     uint64_t firstPts = UINT64_MAX;
 } APPContext;
 
-static int _log(const char *fmt, ...)
+enum LLDef {
+    Debug,
+    Warn, 
+    Info, 
+    Error,
+    FATAL,
+    Nousing,
+};
+
+typedef struct {
+    LLDef level;
+    char* desc;
+    char* spaces;
+} LL;
+
+const LL info[] = 
+{
+    { Debug, "Debug", ""},
+    { Warn, "Warn", " " },
+    { Info, "Info", "  " },
+    { Error, "Error", "   " },
+    { FATAL, "FATAL", "    " },
+    { Nousing, "Nousing", "     " },
+};
+
+static int _log(int level, const char *fmt, ...)
 {
     va_list vl;
     va_start(vl, fmt);
@@ -53,13 +79,13 @@ static int _log(const char *fmt, ...)
 
     vsnprintf(buf, 256, fmt, vl);
 
-    fprintf(stderr, "%s\r\n", buf);
+    fprintf(stderr, "%s %s: %s\r\n", info[level].spaces, info[level].desc, buf);
 
     va_end(vl);
     return 0;
 }
 
-bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height, int bframes)
+bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height, int bframes, std::string &rc)
 {
     auto& vp = ctx->encParams;
     auto& exBufs = ctx->exBufs;
@@ -100,7 +126,56 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height,
         mfx.GopOptFlag = MFX_GOP_CLOSED;
         mfx.IdrInterval = 0; // every I frame is IDR 
 
-        mfx.RateControlMethod = MFX_RATECONTROL_QVBR;
+        if (rc.find("CBR") != rc.npos)
+        {
+            mfx.RateControlMethod = MFX_RATECONTROL_CBR;
+        }
+        else if (rc.find("QVBR") != rc.npos)
+        {
+            mfx.RateControlMethod = MFX_RATECONTROL_QVBR;
+        }
+        else if (rc.find("AVBR") != rc.npos)
+        {
+            mfx.RateControlMethod = MFX_RATECONTROL_AVBR;
+        }
+        else if (rc.find("VBR") != rc.npos)
+        {
+            mfx.RateControlMethod = MFX_RATECONTROL_VBR;
+        }
+        else if (rc.find("CQP") != rc.npos)
+        {
+            mfx.RateControlMethod = MFX_RATECONTROL_CQP;
+        }
+        else if (rc.find("ICQ") != rc.npos)
+        {
+            mfx.RateControlMethod = MFX_RATECONTROL_ICQ;
+        }
+        else if (rc.find("VCM") != rc.npos)
+        {
+            mfx.RateControlMethod = MFX_RATECONTROL_VCM;
+        }
+        else if (rc.find("LA_ICQ") != rc.npos)
+        {
+            mfx.RateControlMethod = MFX_RATECONTROL_LA_ICQ;
+        }
+        else if (rc.find("LA_EXT") != rc.npos)
+        {
+            mfx.RateControlMethod = MFX_RATECONTROL_LA_EXT;
+        }
+        else if (rc.find("LA_HRD") != rc.npos)
+        {
+            mfx.RateControlMethod = MFX_RATECONTROL_LA_HRD;
+        }
+        else if (rc.find("LA") != rc.npos)
+        {
+            mfx.RateControlMethod = MFX_RATECONTROL_LA;
+        }
+        else
+        {
+            mfx.RateControlMethod = MFX_RATECONTROL_CBR;
+        }
+
+        _log(Info, "using rc mode = %d", mfx.RateControlMethod);
 
         if (mfx.RateControlMethod == MFX_RATECONTROL_CBR) {
             // HRD  mode
@@ -135,16 +210,16 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height,
             mfx.InitialDelayInKB = kbps / 8;
             mfx.BufferSizeInKB = kbps / 8;
         }
+        else if (mfx.RateControlMethod == MFX_RATECONTROL_LA) 
+        {
+            mfx.TargetKbps = kbps;
+        }
         else
         {
             mfx.TargetKbps = kbps;
         }
-
-        if (false) // for battery power device using
-        {
-            mfx.LowPower = MFX_CODINGOPTION_ON;
-        }
     }
+
     mfx.NumSlice = 1;
     mfx.NumRefFrame = 3;
     //mfx.EncodedOrder = 0;
@@ -341,7 +416,7 @@ mfxStatus encode(APPContext* ctx,
         sts = MFX_ERR_NONE; // Ignore warnings if output is available
     }
     else if (MFX_ERR_NONE > sts) {
-        _log("enc error code : %s", std::to_string(sts).c_str());
+        _log(Info, "enc error code : %s", std::to_string(sts).c_str());
     }
     else {
         ctx->session->SyncOperation(syncPt, INFINITE);
@@ -382,7 +457,7 @@ mfxStatus encode(APPContext* ctx,
             kbps = stat.NumBit / ms;
         }
 
-        _log("%6lld,%8d,%4s,%8lld,%8lld,%8lld", index, bs.DataLength, type, bs.TimeStamp / 90, dts / 90, kbps);
+        _log(Info, "%6lld,%8d,%4s,%8lld,%8lld,%8lld", index, bs.DataLength, type, bs.TimeStamp / 90, dts / 90, kbps);
         bs.DataLength = 0;
         sts = MFX_ERR_NONE;
     }
@@ -399,8 +474,29 @@ int main(int argc, char *argv[])
 
     APPContext *ctx = new APPContext;
 
+    std::string ifn("C:\\temps\\pubg-sand-cloud-1920x1080p-60fps.yuv");
+    std::string ofn;
+    std::string rcmode;
+    _log(Info, "Usage: %s -i input_file_name, \r\n \t the output file will be = input_file_name + \".h264\"", argv[0]);
+    for (auto i = 1; i < argc - 1; i++) {
+        if (!strcmp(argv[i], "-i")) {
+            ifn = argv[i + 1];
+        }
+        else if (!strcmp(argv[i], "-rc")) {
+            rcmode = argv[i + 1];
+            std::transform(rcmode.begin(), rcmode.end(), rcmode.begin(), ::toupper);
+        }
+    }
+
+    ofn = ifn + ".h264";
+    _log(Warn, "Output File = %s", ofn.c_str());
+
     int pitchW = MSDK_ALIGN16(width);
     int pitchH = MSDK_ALIGN16(height);
+
+    ctx->session = new MFXVideoSession();
+
+    mfxStatus sts = MFX_ERR_NONE;
 
     mfxInitParam initP = { 0 };
     initP.Implementation = MFX_IMPL_HARDWARE_ANY;
@@ -409,19 +505,16 @@ int main(int argc, char *argv[])
     ver.Minor = 0;
     ver.Major = 1;
     initP.Version = ver;
-
-    mfxStatus sts;
-    mfxIMPL impl;
-
-    ctx->session = new MFXVideoSession();
     sts = ctx->session->InitEx(initP);
     if (sts != MFX_ERR_NONE) {
-        _log("can not init session.");
+        _log(FATAL, "can not init session.");
     }
+
+    mfxIMPL impl;
     ctx->session->QueryIMPL(&impl);
     ctx->session->QueryVersion(&ver);
 
-    _log("with impl %x, in %d.%d", impl, ver.Major, ver.Minor);
+    _log(Info, "with impl %x, in %d.%d", impl, ver.Major, ver.Minor);
 
     {
         switch (MFX_IMPL_BASETYPE(impl)) {
@@ -429,52 +522,41 @@ int main(int argc, char *argv[])
         case MFX_IMPL_HARDWARE2:
         case MFX_IMPL_HARDWARE3:
         case MFX_IMPL_HARDWARE4:
-            _log("using hardware session");
+            _log(Warn, "using hardware session");
             break;
         default:
-            _log("using not hardware session");
+            _log(Warn, "using not hardware session");
             break;
         }
     }
 
     ctx->encoder = new MFXVideoENCODE(*ctx->session);
     ZeroMemory(&ctx->encParams, sizeof(mfxVideoParam));
-    setupVideoParams(ctx, fps, kbps, width, height, bframe);
+    setupVideoParams(ctx, fps, kbps, width, height, bframe, rcmode);
     sts = ctx->encoder->Init(&ctx->encParams);
     if (sts != MFX_ERR_NONE) {
-        _log("can not init encoder.");
+        _log(FATAL, "can not init encoder.");
     }
 
     allocFrame(ctx);
     allocBitstream(ctx, kbps);
 
-    std::string ifn("C:\\temps\\pubg-sand-cloud-1920x1080p-60fps.yuv");
-    std::string ofn;
-    _log("Usage: %s -i input_file_name, \r\n \t the output file will be = input_file_name + \".h264\"", argv[0]);
-    for (auto i = 1; i < argc - 1; i++) {
-        if (argv[i] == "-i") {
-            ifn = argv[i + 1];
-        }
-    }
-
-    ofn = ifn + ".h264";
-
     std::ifstream yuv;
     yuv.open(ifn, std::ios::binary | std::ios::in);
     if (!yuv.is_open()) {
-        _log("can not open file %s.", ifn.c_str());
+        _log(FATAL, "can not open file %s.", ifn.c_str());
     }
 
     std::ofstream h264;
     h264.open(ofn, std::ios::binary | std::ios::out);
     if (!h264.is_open()) {
-        _log("can not open output file. %s", ofn.c_str());
+        _log(Error, "can not open output file. %s", ofn.c_str());
     }
 
     auto size = width * height * 3 / 2;
     uint8_t *buf = (uint8_t*)_aligned_malloc(size, 32);
     if (!buf) {
-        _log("can not alloc reading buffer.");
+        _log(FATAL, "can not alloc reading buffer.");
     }
 
     int64_t index = 0;
