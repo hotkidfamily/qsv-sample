@@ -13,6 +13,9 @@
 
 #pragma comment(lib, "libmfx_vs2015.lib")
 
+#define MSDK_ALIGN16(value) (((value + 15) >> 4) << 4) // round up to a multiple of 16
+#define MSDK_ALIGN32(value) (((value + 31) >> 5) << 5) // round up to a multiple of 32
+
 typedef struct {
     mfxBitstream mfxBS;
     mfxSyncPoint syncp;
@@ -40,7 +43,7 @@ typedef struct _tagContext
     std::deque<int64_t> ptsQueue;
 
     uint64_t firstPts = UINT64_MAX;
-}APPContext;
+} APPContext;
 
 static int _log(const char *fmt, ...)
 {
@@ -55,9 +58,6 @@ static int _log(const char *fmt, ...)
     va_end(vl);
     return 0;
 }
-
-#define MSDK_ALIGN16(value) (((value + 15) >> 4) << 4) // round up to a multiple of 16
-#define MSDK_ALIGN32(value) (((value + 31) >> 5) << 5) // round up to a multiple of 32
 
 bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height, int bframes)
 {
@@ -98,36 +98,46 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height,
         mfx.GopPicSize = fps * 2;
         mfx.GopRefDist = bframes + 1; // bframes
         mfx.GopOptFlag = MFX_GOP_CLOSED;
-        mfx.IdrInterval = fps * 2;
+        mfx.IdrInterval = 0; // every I frame is IDR 
 
-        mfx.RateControlMethod = MFX_RATECONTROL_CBR;
+        mfx.RateControlMethod = MFX_RATECONTROL_QVBR;
 
-        //mfx.MaxKbps = kbps;
-        //mfx.InitialDelayInKB = kbps /8;
-        mfx.BufferSizeInKB = kbps / 8;
-
-        if (mfx.RateControlMethod == MFX_RATECONTROL_CQP)
+        if (mfx.RateControlMethod == MFX_RATECONTROL_CBR) {
+            // HRD  mode
+            mfx.MaxKbps = kbps;
+            mfx.BufferSizeInKB = kbps / 8;
+            mfx.TargetKbps = kbps;
+        }
+        else if (mfx.RateControlMethod == MFX_RATECONTROL_CQP)
         {
             mfx.QPI = mfx.QPP = mfx.QPB = 23;
         }
         else if (mfx.RateControlMethod == MFX_RATECONTROL_ICQ ||
             mfx.RateControlMethod == MFX_RATECONTROL_LA_ICQ)
         {
-            //mfx.ICQQuality = pInParams->ICQQuality;
+            mfx.ICQQuality = 23;
         }
         else if (mfx.RateControlMethod == MFX_RATECONTROL_AVBR)
         {
-            //mfx.Accuracy = pInParams->Accuracy;
+            mfx.Accuracy = 1;
             mfx.TargetKbps = kbps;
-            //mfx.Convergence = pInParams->Convergence;
+            mfx.Convergence = kbps * 100 / 60 ;
         }
         else if (mfx.RateControlMethod == MFX_RATECONTROL_QVBR)
         {
-            co3.QVBRQuality = 32;
+            mfx.TargetKbps = kbps;
+            mfx.InitialDelayInKB = kbps / 8;
+            mfx.BufferSizeInKB = kbps / 8;
+        }
+        else if (mfx.RateControlMethod == MFX_RATECONTROL_VBR)
+        {
+            mfx.TargetKbps = kbps;
+            mfx.InitialDelayInKB = kbps / 8;
+            mfx.BufferSizeInKB = kbps / 8;
         }
         else
         {
-            mfx.TargetKbps = kbps; // in Kbps
+            mfx.TargetKbps = kbps;
         }
 
         if (false) // for battery power device using
@@ -171,6 +181,10 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height,
     co3.ScenarioInfo = MFX_SCENARIO_LIVE_STREAMING;
     co3.ContentInfo = MFX_CONTENT_FULL_SCREEN_VIDEO;
 
+    if (mfx.RateControlMethod == MFX_RATECONTROL_QVBR){
+        co3.QVBRQuality = 27;
+    }
+
     ZeroMemory(&vui, sizeof(mfxExtVideoSignalInfo));
     vui.Header.BufferId = MFX_EXTBUFF_VIDEO_SIGNAL_INFO;
     vui.Header.BufferSz = sizeof(mfxExtVideoSignalInfo);
@@ -181,7 +195,7 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height,
     vui.VideoFullRange = 0;
     vui.ColourDescriptionPresent = 1;
 
-    ZeroMemory(ctx->exBufs, sizeof(exBufs));
+    ZeroMemory(exBufs, sizeof(exBufs[0]) * ARRAYSIZE(exBufs));
 
     exBufs[0] = &co.Header;
     exBufs[1] = &co2.Header;
@@ -198,6 +212,7 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height,
     return true;
 }
 
+#pragma region buffer_alloc
 
 int allocFrame(APPContext* ctx)
 {
@@ -229,9 +244,7 @@ int allocFrame(APPContext* ctx)
             ZeroMemory(pSurface, size);
             data.Y = pSurface;
             data.UV = pSurface + width * height;
-            // 			data.U = pSurface + width * height;
-            // 			data.V = pSurface + width * height + width * height / 4;
-            data.Pitch = width; // must not empty
+            data.Pitch = width; // must not empty, or EncodeFrameAsync return MFX_ERR_UNDEFINED_BEHAVIOR
         }
     }
     return true;
@@ -291,6 +304,8 @@ void releaseBitstream(APPContext *ctx)
         delete[] chain;
     }
 }
+
+#pragma endregion buffer_alloc
 
 mfxStatus encode(APPContext* ctx,
     int64_t index,
@@ -434,14 +449,14 @@ int main()
     allocBitstream(ctx, kbps);
 
     std::ifstream yuv;
-    std::string ifile("C:\\temps\\lol-single-person-nvenc-1920x1080-60fps.yuv");
+    std::string ifile("C:\\temps\\pubg-sand-cloud-1920x1080p-60fps.yuv");
     yuv.open(ifile, std::ios::binary | std::ios::in);
     if (!yuv.is_open()) {
         _log("can not open file %s.", ifile.c_str());
     }
 
     std::ofstream h264;
-    std::string ofile("C:\\temps\\lol-single-person-nvenc-1920x1080-60fps-qsv.h264");
+    std::string ofile("C:\\temps\\pubg-sand-cloud-1920x1080p-60fps-qsv.h264");
     h264.open(ofile, std::ios::binary | std::ios::out);
     if (!h264.is_open()) {
         _log("can not open output file. %s", ofile.c_str());
@@ -468,6 +483,7 @@ int main()
             auto &bs = ctx->encChain[index % ctx->asyncDepth].mfxBS;
             auto &syncPt = ctx->encChain[index % ctx->asyncDepth].syncp;
 
+            // trans to nv12
             {
                 auto len = pitchW*pitchH;
                 auto srclen = width * height;
@@ -484,7 +500,6 @@ int main()
                 src = buf + srclen;
                 auto src2 = buf + srclen + srclen / 4;
                 for (auto i = 0; i < height / 2; i++) {
-                    //memcpy(ptr, src, width);
                     for (auto j = 0; j < width / 2; j++) {
                         *(ptr + 2 * j) = *(src + j);
                         *(ptr + 2 * j + 1) = *(src2 + j);
@@ -493,14 +508,6 @@ int main()
                     src2 += width / 2;
                     ptr += pitchW;
                 }
-
-                // 				ptr = surface.Data.V;
-                // 				src = buf + srclen + srclen / 4;
-                // 				for (auto i = 0; i < height / 2; i++) {
-                // 					memcpy(ptr, src, width / 2);
-                // 					ptr += pitchW / 2;
-                // 					src += width / 2;
-                // 				}
 
                 surface.Data.TimeStamp = timeStamp;
                 surface.Data.MemType = MFX_MEMTYPE_SYSTEM_MEMORY;
