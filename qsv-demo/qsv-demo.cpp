@@ -389,7 +389,7 @@ mfxStatus encode(APPContext* ctx,
     return sts;
 }
 
-int main()
+int main(int argc, char *argv[])
 {
     int fps = 60;
     int kbps = 8000;
@@ -448,18 +448,27 @@ int main()
     allocFrame(ctx);
     allocBitstream(ctx, kbps);
 
+    std::string ifn("C:\\temps\\pubg-sand-cloud-1920x1080p-60fps.yuv");
+    std::string ofn;
+    _log("Usage: %s -i input_file_name, \r\n \t the output file will be = input_file_name + \".h264\"", argv[0]);
+    for (auto i = 1; i < argc - 1; i++) {
+        if (argv[i] == "-i") {
+            ifn = argv[i + 1];
+        }
+    }
+
+    ofn = ifn + ".h264";
+
     std::ifstream yuv;
-    std::string ifile("C:\\temps\\pubg-sand-cloud-1920x1080p-60fps.yuv");
-    yuv.open(ifile, std::ios::binary | std::ios::in);
+    yuv.open(ifn, std::ios::binary | std::ios::in);
     if (!yuv.is_open()) {
-        _log("can not open file %s.", ifile.c_str());
+        _log("can not open file %s.", ifn.c_str());
     }
 
     std::ofstream h264;
-    std::string ofile("C:\\temps\\pubg-sand-cloud-1920x1080p-60fps-qsv.h264");
-    h264.open(ofile, std::ios::binary | std::ios::out);
+    h264.open(ofn, std::ios::binary | std::ios::out);
     if (!h264.is_open()) {
-        _log("can not open output file. %s", ofile.c_str());
+        _log("can not open output file. %s", ofn.c_str());
     }
 
     auto size = width * height * 3 / 2;
