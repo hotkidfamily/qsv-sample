@@ -118,7 +118,7 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height,
 
     mfx.CodecId = MFX_CODEC_AVC;
     mfx.CodecProfile = MFX_PROFILE_AVC_HIGH;
-    mfx.TargetUsage = MFX_TARGETUSAGE_BALANCED;
+    mfx.TargetUsage = MFX_TARGETUSAGE_BEST_QUALITY;
 
     {
         mfx.GopPicSize = fps * 2;
@@ -177,10 +177,12 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height,
 
         _log(Info, "using rc mode = %d", mfx.RateControlMethod);
 
+        // limited by bit stream buff size
+        mfx.BufferSizeInKB = kbps / 8;
+
         if (mfx.RateControlMethod == MFX_RATECONTROL_CBR) {
             // HRD  mode
             mfx.MaxKbps = kbps;
-            mfx.BufferSizeInKB = kbps / 8;
             mfx.TargetKbps = kbps;
         }
         else if (mfx.RateControlMethod == MFX_RATECONTROL_CQP)
@@ -200,15 +202,13 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height,
         }
         else if (mfx.RateControlMethod == MFX_RATECONTROL_QVBR)
         {
-            mfx.TargetKbps = kbps;
-            mfx.InitialDelayInKB = kbps / 8;
-            mfx.BufferSizeInKB = kbps / 8;
+             mfx.TargetKbps = kbps;
+//              mfx.MaxKbps = kbps;
         }
         else if (mfx.RateControlMethod == MFX_RATECONTROL_VBR)
         {
             mfx.TargetKbps = kbps;
             mfx.InitialDelayInKB = kbps / 8;
-            mfx.BufferSizeInKB = kbps / 8;
         }
         else if (mfx.RateControlMethod == MFX_RATECONTROL_LA) 
         {
@@ -227,11 +227,12 @@ bool setupVideoParams(APPContext *ctx, int fps, int kbps, int width, int height,
     ZeroMemory(&co, sizeof(mfxExtCodingOption));
     co.Header.BufferId = MFX_EXTBUFF_CODING_OPTION;
     co.Header.BufferSz = sizeof(mfxExtCodingOption);
-    co.CAVLC = MFX_CODINGOPTION_OFF;
+    co.CAVLC = MFX_CODINGOPTION_UNKNOWN; // cabac
     co.NalHrdConformance = MFX_CODINGOPTION_OFF;
     co.SingleSeiNalUnit = MFX_CODINGOPTION_ON;
     co.MaxDecFrameBuffering = 3;
-    co.FramePicture = MFX_CODINGOPTION_OFF; // progressive frame
+    co.RateDistortionOpt = MFX_CODINGOPTION_ON;
+    co.FramePicture = MFX_CODINGOPTION_OFF;
     co.PicTimingSEI = MFX_CODINGOPTION_OFF;
     co.AUDelimiter = MFX_CODINGOPTION_OFF;
 
@@ -355,7 +356,7 @@ mfxStatus allocBitstream(APPContext * ctx, int32_t kbps)
     for (int i = 0; i < asyncDepth; i++) {
         auto &opera = chain[i];
         opera.mfxBS.MaxLength = kbps * 1000 / 8;
-        opera.mfxBS.Data = (mfxU8*)_aligned_malloc(opera.mfxBS.MaxLength, 32);// new mfxU8[opera.mfxBS.MaxLength];
+        opera.mfxBS.Data = (mfxU8*)_aligned_malloc(opera.mfxBS.MaxLength, 32); // 32 bytes aligned
         ZeroMemory(opera.mfxBS.Data, opera.mfxBS.MaxLength);
         opera.mfxBS.DataOffset = 0;
         opera.mfxBS.DataLength = 0;
